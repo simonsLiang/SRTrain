@@ -9,6 +9,7 @@ import utils
 import skimage.color as sc
 import random
 from collections import OrderedDict
+import shutil
 # os.environ["CUDA_VISIBLE_DEVICES"] = '0'
 
 # Training settings
@@ -175,12 +176,15 @@ def save_checkpoint(epoch):
         }
     torch.save(state, checkpoint_path)
     if args.iskaggle == 'y':
-      os.system('cp -r '+'/kaggle/working/model.pth '+'/kaggle/working/SRTrain')
-      os.system('cd /kaggle/working/SRTrain')
+      shutil.copyfile('/kaggle/working/model.pth','/kaggle/working/SRTrain/model.pth')
+      os.chdir('/kaggle/working/SRTrain')
+      os.system('git rm --cached model.pth')
+      os.system("git commit -m 'ts'")
+      os.system("git push -u origin main")
       os.system('git add model.pth')
       os.system("git commit -m 'ts'")
       os.system("git push -u origin main")
-      os.system("cd /kaggle/working/IMDN")
+      os.chdir("/kaggle/working/IMDN")
     print("===> Checkpoint saved to {}".format(checkpoint_path))
 
 def print_network(net):
