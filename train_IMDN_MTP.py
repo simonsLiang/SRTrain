@@ -175,9 +175,12 @@ def save_checkpoint(epoch):
         }
     torch.save(state, checkpoint_path)
     if args.iskaggle == 'y':
-      os.system('git add '+ checkpoint_path)
+      os.system('cp -r '+'/kaggle/working/model.pth '+'/kaggle/working/SRTrain')
+      os.system('cd /kaggle/working/SRTrain')
+      os.system('git add model.pth')
       os.system("git commit -m 'ts'")
       os.system("git push -u origin main")
+      os.system("cd /kaggle/working/IMDN")
     print("===> Checkpoint saved to {}".format(checkpoint_path))
 
 def print_network(net):
