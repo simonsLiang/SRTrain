@@ -1,188 +1,278 @@
-import argparse, os
-import torch
 import torch.nn as nn
-import torch.optim as optim
-from torch.utils.data import DataLoader
-from model import architecture
-from data import DIV2K, Set5_val
-import utils
-import skimage.color as sc
-import random
 from collections import OrderedDict
-# os.environ["CUDA_VISIBLE_DEVICES"] = '0'
+import torch
 
-# Training settings
-parser = argparse.ArgumentParser(description="IMDN")
-parser.add_argument("--batch_size", type=int, default=16,
-                    help="training batch size")
-parser.add_argument("--testBatchSize", type=int, default=1,
-                    help="testing batch size")
-parser.add_argument("-nEpochs", type=int, default=1000,
-                    help="number of epochs to train")
-parser.add_argument("--lr", type=float, default=2e-4,
-                    help="Learning Rate. Default=2e-4")
-parser.add_argument("--step_size", type=int, default=200,
-                    help="learning rate decay per N epochs")
-parser.add_argument("--gamma", type=int, default=0.5,
-                    help="learning rate decay factor for step decay")
-parser.add_argument("--cuda", action="store_true", default=True,
-                    help="use cuda")
-parser.add_argument("--resume", default="", type=str,
-                    help="path to checkpoint")
-parser.add_argument("--start-epoch", default=1, type=int,
-                    help="manual epoch number")
-parser.add_argument("--threads", type=int, default=8,
-                    help="number of threads for data loading")
-parser.add_argument("--root", type=str, default="training_data/",
-                    help='dataset directory')
-parser.add_argument("--n_train", type=int, default=800,
-                    help="number of training set")
-parser.add_argument("--n_val", type=int, default=1,
-                    help="number of validation set")
-parser.add_argument("--test_every", type=int, default=1000)
-parser.add_argument("--scale", type=int, default=2,
-                    help="super-resolution scale")
-parser.add_argument("--patch_size", type=int, default=64,
-                    help="output patch size")
-parser.add_argument("--rgb_range", type=int, default=1,
-                    help="maxium value of RGB")
-parser.add_argument("--n_colors", type=int, default=3,
-                    help="number of color channels to use")
-parser.add_argument("--pretrained", default="", type=str,
-                    help="path to pretrained models")
-parser.add_argument("--seed", type=int, default=None)
-parser.add_argument("--isY", action="store_true", default=False)
-parser.add_argument("--ext", type=str, default='.npy')
-parser.add_argument("--phase", type=str, default='train')
+import numpy as np
+from torch.nn import init
+from torch.nn.parameter import Parameter
 
-args = parser.parse_args()
-print(args)
-torch.backends.cudnn.benchmark = True
-# random seed
-seed = args.seed
-if seed is None:
-    seed = random.randint(1, 10000)
-print("Ramdom Seed: ", seed)
-random.seed(seed)
-torch.manual_seed(seed)
 
-cuda = args.cuda
-device = torch.device('cuda' if cuda else 'cpu')
+class ShuffleAttention(nn.Module):
 
-print("===> Loading datasets")
+    def __init__(self, channel=64,reduction=16,G=8):
+        super().__init__()
+        self.G=G
+        self.channel=channel
+        self.avg_pool = nn.AdaptiveAvgPool2d(1)
+        self.gn = nn.GroupNorm(channel // (2 * G), channel // (2 * G))
+        self.cweight = Parameter(torch.zeros(1, channel // (2 * G), 1, 1))
+        self.cbias = Parameter(torch.ones(1, channel // (2 * G), 1, 1))
+        self.sweight = Parameter(torch.zeros(1, channel // (2 * G), 1, 1))
+        self.sbias = Parameter(torch.ones(1, channel // (2 * G), 1, 1))
+        self.sigmoid=nn.Sigmoid()
 
-trainset = DIV2K.div2k(args)
-training_data_loader = DataLoader(dataset=trainset, num_workers=args.threads, batch_size=args.batch_size, shuffle=True, pin_memory=True, drop_last=True)
 
-testset = Set5_val.DatasetFromFolderVal("/content/DIV2K_valid_HR",
-                                       "/content/DIV2K_valid_LR_bicubic/X4/",
-                                       args.scale)
-testing_data_loader = DataLoader(dataset=testset, num_workers=args.threads, batch_size=args.testBatchSize,
-                                 shuffle=False)                                
+    def init_weights(self):
+        for m in self.modules():
+            if isinstance(m, nn.Conv2d):
+                init.kaiming_normal_(m.weight, mode='fan_out')
+                if m.bias is not None:
+                    init.constant_(m.bias, 0)
+            elif isinstance(m, nn.BatchNorm2d):
+                init.constant_(m.weight, 1)
+                init.constant_(m.bias, 0)
+            elif isinstance(m, nn.Linear):
+                init.normal_(m.weight, std=0.001)
+                if m.bias is not None:
+                    init.constant_(m.bias, 0)
 
-print("===> Building models")
-args.is_train = True
 
-model = architecture.IMDN(upscale=args.scale)
-l1_criterion = nn.L1Loss()
+    @staticmethod
+    def channel_shuffle(x, groups):
+        b, c, h, w = x.shape
+        x = x.reshape(b, groups, -1, h, w)
+        x = x.permute(0, 2, 1, 3, 4)
 
-print("===> Setting GPU")
-if cuda:
-    model = model.to(device)
-    l1_criterion = l1_criterion.to(device)
+        # flatten
+        x = x.reshape(b, -1, h, w)
 
-if args.pretrained:
+        return x
 
-    if os.path.isfile(args.pretrained):
-        print("===> loading models '{}'".format(args.pretrained))
-        checkpoint = torch.load(args.pretrained)
-        model.load_state_dict(checkpoint, strict=True)
+    def forward(self, x):
+        b, c, h, w = x.size()
+        #group into subfeatures
+        x=x.view(b*self.G,-1,h,w) #bs*G,c//G,h,w
 
+        #channel_split
+        x_0,x_1=x.chunk(2,dim=1) #bs*G,c//(2*G),h,w
+
+        #channel attention
+        x_channel=self.avg_pool(x_0) #bs*G,c//(2*G),1,1
+        x_channel=self.cweight*x_channel+self.cbias #bs*G,c//(2*G),1,1
+        x_channel=x_0*self.sigmoid(x_channel)
+
+        #spatial attention
+        x_spatial=self.gn(x_1) #bs*G,c//(2*G),h,w
+        x_spatial=self.sweight*x_spatial+self.sbias #bs*G,c//(2*G),h,w
+        x_spatial=x_1*self.sigmoid(x_spatial) #bs*G,c//(2*G),h,w
+
+        # concatenate along channel axis
+        out=torch.cat([x_channel,x_spatial],dim=1)  #bs*G,c//G,h,w
+        out=out.contiguous().view(b,-1,h,w)
+
+        # channel shuffle
+        out = self.channel_shuffle(out, 2)
+        return out
+
+def conv_layer(in_channels, out_channels, kernel_size, stride=1, dilation=1, groups=1, bias=True):
+    padding = int((kernel_size - 1) / 2) * dilation
+    return nn.Conv2d(in_channels, out_channels, kernel_size, stride, padding=padding, bias=bias, dilation=dilation,
+                     groups=groups)
+
+
+def norm(norm_type, nc):
+    norm_type = norm_type.lower()
+    if norm_type == 'batch':
+        layer = nn.BatchNorm2d(nc, affine=True)
+    elif norm_type == 'instance':
+        layer = nn.InstanceNorm2d(nc, affine=False)
     else:
-        print("===> no models found at '{}'".format(args.pretrained))
-
-print("===> Setting Optimizer")
-
-optimizer = optim.Adam(model.parameters(), lr=args.lr)
+        raise NotImplementedError('normalization layer [{:s}] is not found'.format(norm_type))
+    return layer
 
 
-def train(epoch):
-    model.train()
-    utils.adjust_learning_rate(optimizer, epoch, args.step_size, args.lr, args.gamma)
-    print('epoch =', epoch, 'lr = ', optimizer.param_groups[0]['lr'])
-    for iteration, (lr_tensor, hr_tensor) in enumerate(training_data_loader, 1):
-
-        if args.cuda:
-            lr_tensor = lr_tensor.to(device)  # ranges from [0, 1]
-            hr_tensor = hr_tensor.to(device)  # ranges from [0, 1]
-
-        optimizer.zero_grad()
-        sr_tensor = model(lr_tensor)
-        loss_l1 = l1_criterion(sr_tensor, hr_tensor)
-        loss_sr = loss_l1
-
-        loss_sr.backward()
-        optimizer.step()
-        if iteration % 100 == 0:
-            print("===> Epoch[{}]({}/{}): Loss_l1: {:.5f}".format(epoch, iteration, len(training_data_loader),
-                                                                  loss_l1.item()))
+def pad(pad_type, padding):
+    pad_type = pad_type.lower()
+    if padding == 0:
+        return None
+    if pad_type == 'reflect':
+        layer = nn.ReflectionPad2d(padding)
+    elif pad_type == 'replicate':
+        layer = nn.ReplicationPad2d(padding)
+    else:
+        raise NotImplementedError('padding layer [{:s}] is not implemented'.format(pad_type))
+    return layer
 
 
-def valid():
-    model.eval()
-
-    avg_psnr, avg_ssim = 0, 0
-    for batch in testing_data_loader:
-        lr_tensor, hr_tensor = batch[0], batch[1]
-        if args.cuda:
-            lr_tensor = lr_tensor.to(device)
-            hr_tensor = hr_tensor.to(device)
-
-        with torch.no_grad():
-            pre = model(lr_tensor)
-
-        sr_img = utils.tensor2np(pre.detach()[0])
-        gt_img = utils.tensor2np(hr_tensor.detach()[0])
-        crop_size = args.scale
-        cropped_sr_img = utils.shave(sr_img, crop_size)
-        cropped_gt_img = utils.shave(gt_img, crop_size)
-        if args.isY is True:
-            im_label = utils.quantize(sc.rgb2ycbcr(cropped_gt_img)[:, :, 0])
-            im_pre = utils.quantize(sc.rgb2ycbcr(cropped_sr_img)[:, :, 0])
-        else:
-            im_label = cropped_gt_img
-            im_pre = cropped_sr_img
-        avg_psnr += utils.compute_psnr(im_pre, im_label)
-        avg_ssim += utils.compute_ssim(im_pre, im_label)
-    print("===> Valid. psnr: {:.4f}, ssim: {:.4f}".format(avg_psnr / len(testing_data_loader), avg_ssim / len(testing_data_loader)))
+def get_valid_padding(kernel_size, dilation):
+    kernel_size = kernel_size + (kernel_size - 1) * (dilation - 1)
+    padding = (kernel_size - 1) // 2
+    return padding
 
 
-def save_checkpoint(epoch):
-    model_folder = "/content/drive/MyDrive/SR/"
-    model_out_path = model_folder + "mtp_epoch_{}".format(epoch)
-    if not os.path.exists(model_folder):
-        os.makedirs(model_folder)
-    torch.save(model.state_dict(), model_out_path)
-    print("===> Checkpoint saved to {}".format(model_out_path))
+def conv_block(in_nc, out_nc, kernel_size, stride=1, dilation=1, groups=1, bias=True,
+               pad_type='zero', norm_type=None, act_type='relu'):
+    padding = get_valid_padding(kernel_size, dilation)
+    p = pad(pad_type, padding) if pad_type and pad_type != 'zero' else None
+    padding = padding if pad_type == 'zero' else 0
 
-def print_network(net):
-    num_params = 0
-    for param in net.parameters():
-        num_params += param.numel()
-    print(net)
-    print('Total number of parameters: %d' % num_params)
+    c = nn.Conv2d(in_nc, out_nc, kernel_size=kernel_size, stride=stride, padding=padding,
+                  dilation=dilation, bias=bias, groups=groups)
+    a = activation(act_type) if act_type else None
+    n = norm(norm_type, out_nc) if norm_type else None
+    return sequential(p, c, n, a)
 
 
-print("===> Training")
-print_network(model)
-for epoch in range(args.start_epoch, args.nEpochs + 1):
-    train(epoch)
-    if epoch%200==0:
-        save_checkpoint(epoch)
-        valid() 
-        args.patch_size = args.patch_size +64
-        print('patch_size',args.patch_size)
-        trainset = DIV2K.div2k(args)
-        training_data_loader = DataLoader(dataset=trainset, num_workers=args.threads, batch_size=args.batch_size, shuffle=True, pin_memory=True, drop_last=True)
-      
+def activation(act_type, inplace=True, neg_slope=0.05, n_prelu=1):
+    act_type = act_type.lower()
+    if act_type == 'relu':
+        layer = nn.ReLU(inplace)
+    elif act_type == 'lrelu':
+        layer = nn.LeakyReLU(neg_slope, inplace)
+    elif act_type == 'prelu':
+        layer = nn.PReLU(num_parameters=n_prelu, init=neg_slope)
+    else:
+        raise NotImplementedError('activation layer [{:s}] is not found'.format(act_type))
+    return layer
+
+
+class ShortcutBlock(nn.Module):
+    def __init__(self, submodule):
+        super(ShortcutBlock, self).__init__()
+        self.sub = submodule
+
+    def forward(self, x):
+        output = x + self.sub(x)
+        return output
+
+def mean_channels(F):
+    assert(F.dim() == 4)
+    spatial_sum = F.sum(3, keepdim=True).sum(2, keepdim=True)
+    return spatial_sum / (F.size(2) * F.size(3))
+
+def stdv_channels(F):
+    assert(F.dim() == 4)
+    F_mean = mean_channels(F)
+    F_variance = (F - F_mean).pow(2).sum(3, keepdim=True).sum(2, keepdim=True) / (F.size(2) * F.size(3))
+    return F_variance.pow(0.5)
+
+def sequential(*args):
+    if len(args) == 1:
+        if isinstance(args[0], OrderedDict):
+            raise NotImplementedError('sequential does not support OrderedDict input.')
+        return args[0]
+    modules = []
+    for module in args:
+        if isinstance(module, nn.Sequential):
+            for submodule in module.children():
+                modules.append(submodule)
+        elif isinstance(module, nn.Module):
+            modules.append(module)
+    return nn.Sequential(*modules)
+
+# contrast-aware channel attention module
+class CCALayer(nn.Module):
+    def __init__(self, channel, reduction=16):
+        super(CCALayer, self).__init__()
+
+        self.contrast = stdv_channels
+        self.avg_pool = nn.AdaptiveAvgPool2d(1)
+        self.conv_du = nn.Sequential(
+            nn.Conv2d(channel, channel // reduction, 1, padding=0, bias=True),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(channel // reduction, channel, 1, padding=0, bias=True),
+            nn.Sigmoid()
+        )
+
+
+    def forward(self, x):
+        y = self.contrast(x) + self.avg_pool(x)
+        y = self.conv_du(y)
+        return x * y
+
+
+class IMDModule(nn.Module):
+    def __init__(self, in_channels, distillation_rate=0.25):
+        super(IMDModule, self).__init__()
+        self.distilled_channels = int(in_channels * distillation_rate)
+        self.remaining_channels = int(in_channels - self.distilled_channels)
+        self.c1 = conv_layer(in_channels, in_channels, 3)
+        self.c2 = conv_layer(self.remaining_channels, in_channels, 3)
+        self.c3 = conv_layer(self.remaining_channels, in_channels, 3)
+        self.c4 = conv_layer(self.remaining_channels, self.distilled_channels, 3)
+        self.act = activation('lrelu', neg_slope=0.05)
+        self.c5 = conv_layer(in_channels, in_channels, 1)
+        self.cca = ShuffleAttention(self.distilled_channels * 4)
+
+    def forward(self, input):
+        out_c1 = self.act(self.c1(input))
+        distilled_c1, remaining_c1 = torch.split(out_c1, (self.distilled_channels, self.remaining_channels), dim=1)
+        out_c2 = self.act(self.c2(remaining_c1))
+        distilled_c2, remaining_c2 = torch.split(out_c2, (self.distilled_channels, self.remaining_channels), dim=1)
+        out_c3 = self.act(self.c3(remaining_c2))
+        distilled_c3, remaining_c3 = torch.split(out_c3, (self.distilled_channels, self.remaining_channels), dim=1)
+        out_c4 = self.c4(remaining_c3)
+        out = torch.cat([distilled_c1, distilled_c2, distilled_c3, out_c4], dim=1)
+        out_fused = self.c5(self.cca(out)) + input
+        return out_fused
+
+class IMDModule_speed(nn.Module):
+    def __init__(self, in_channels, distillation_rate=0.25):
+        super(IMDModule_speed, self).__init__()
+        self.distilled_channels = int(in_channels * distillation_rate)
+        self.remaining_channels = int(in_channels - self.distilled_channels)
+        self.c1 = conv_layer(in_channels, in_channels, 3)
+        self.c2 = conv_layer(self.remaining_channels, in_channels, 3)
+        self.c3 = conv_layer(self.remaining_channels, in_channels, 3)
+        self.c4 = conv_layer(self.remaining_channels, self.distilled_channels, 3)
+        self.act = activation('lrelu', neg_slope=0.05)
+        self.c5 = conv_layer(self.distilled_channels * 4, in_channels, 1)
+
+    def forward(self, input):
+        out_c1 = self.act(self.c1(input))
+        distilled_c1, remaining_c1 = torch.split(out_c1, (self.distilled_channels, self.remaining_channels), dim=1)
+        out_c2 = self.act(self.c2(remaining_c1))
+        distilled_c2, remaining_c2 = torch.split(out_c2, (self.distilled_channels, self.remaining_channels), dim=1)
+        out_c3 = self.act(self.c3(remaining_c2))
+        distilled_c3, remaining_c3 = torch.split(out_c3, (self.distilled_channels, self.remaining_channels), dim=1)
+        out_c4 = self.c4(remaining_c3)
+
+        out = torch.cat([distilled_c1, distilled_c2, distilled_c3, out_c4], dim=1)
+        out_fused = self.c5(out) + input
+        return out_fused
+
+class IMDModule_Large(nn.Module):
+    def __init__(self, in_channels, distillation_rate=1/4):
+        super(IMDModule_Large, self).__init__()
+        self.distilled_channels = int(in_channels * distillation_rate)  # 6
+        self.remaining_channels = int(in_channels - self.distilled_channels)  # 18
+        self.c1 = conv_layer(in_channels, in_channels, 3, bias=False)  # 24 --> 24
+        self.c2 = conv_layer(self.remaining_channels, in_channels, 3, bias=False)  # 18 --> 24
+        self.c3 = conv_layer(self.remaining_channels, in_channels, 3, bias=False)  # 18 --> 24
+        self.c4 = conv_layer(self.remaining_channels, self.remaining_channels, 3, bias=False)  # 15 --> 15
+        self.c5 = conv_layer(self.remaining_channels-self.distilled_channels, self.remaining_channels-self.distilled_channels, 3, bias=False)  # 10 --> 10
+        self.c6 = conv_layer(self.distilled_channels, self.distilled_channels, 3, bias=False)  # 5 --> 5
+        self.act = activation('relu')
+        self.c7 = conv_layer(self.distilled_channels * 6, in_channels, 1, bias=False)
+
+    def forward(self, input):
+        out_c1 = self.act(self.c1(input))  # 24 --> 24
+        distilled_c1, remaining_c1 = torch.split(out_c1, (self.distilled_channels, self.remaining_channels), dim=1) # 6, 18
+        out_c2 = self.act(self.c2(remaining_c1))  #  18 --> 24
+        distilled_c2, remaining_c2 = torch.split(out_c2, (self.distilled_channels, self.remaining_channels), dim=1)  # 6, 18
+        out_c3 = self.act(self.c3(remaining_c2))  # 18 --> 24
+        distilled_c3, remaining_c3 = torch.split(out_c3, (self.distilled_channels, self.remaining_channels), dim=1)  # 6, 18
+        out_c4 = self.act(self.c4(remaining_c3))  # 18 --> 18
+        distilled_c4, remaining_c4 = torch.split(out_c4, (self.distilled_channels, self.remaining_channels-self.distilled_channels), dim=1)  # 6, 12
+        out_c5 = self.act(self.c5(remaining_c4))  # 12 --> 12
+        distilled_c5, remaining_c5 = torch.split(out_c5, (self.distilled_channels, self.remaining_channels-self.distilled_channels*2), dim=1)  # 6, 6
+        out_c6 = self.act(self.c6(remaining_c5))  # 6 --> 6
+
+        out = torch.cat([distilled_c1, distilled_c2, distilled_c3, distilled_c4, distilled_c5, out_c6], dim=1)
+        out_fused = self.c7(out) + input
+        return out_fused
     
+def pixelshuffle_block(in_channels, out_channels, upscale_factor=2, kernel_size=3, stride=1):
+    conv = conv_layer(in_channels, out_channels * (upscale_factor ** 2), kernel_size, stride)
+    pixel_shuffle = nn.PixelShuffle(upscale_factor)
+    return sequential(conv, pixel_shuffle)
