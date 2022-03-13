@@ -102,7 +102,7 @@ print("===> Loading datasets")
 scale_patch_size = args.start_epoch // 200
 if args.patch_change == 'up':
     args.patch_size = args.patch_size + 64*scale_patch_size
- elif args.patch_change == 'down':
+elif args.patch_change == 'down':
     args.patch_size = args.patch_size - 64*scale_patch_size
 
 trainset = DIV2K.div2k(args)
