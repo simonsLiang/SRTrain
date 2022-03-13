@@ -75,16 +75,6 @@ torch.manual_seed(seed)
 cuda = args.cuda
 device = torch.device('cuda' if cuda else 'cpu')
 
-print("===> Loading datasets")
-
-trainset = DIV2K.div2k(args)
-training_data_loader = DataLoader(dataset=trainset, num_workers=args.threads, batch_size=args.batch_size, shuffle=True, pin_memory=True, drop_last=True)
-
-testset = Set5_val.DatasetFromFolderVal(args.valid_root+"/DIV2K_valid_HR",
-                                       args.valid_root+"/DIV2K_valid_LR_bicubic/X4/",
-                                       args.scale)
-testing_data_loader = DataLoader(dataset=testset, num_workers=args.threads, batch_size=args.testBatchSize,
-                                 shuffle=False)                                
 
 print("===> Building models")
 args.is_train = True
@@ -107,6 +97,24 @@ if args.pretrained:
 
     else:
         print("===> no models found at '{}'".format(args.pretrained))
+
+print("===> Loading datasets")
+scale_patch_size = args.start_epoch // 200
+if args.patch_change == 'up':
+    args.patch_size = args.patch_size + 64*scale_patch_size
+ elif args.patch_change == 'down':
+    args.patch_size = args.patch_size - 64*scale_patch_size
+
+trainset = DIV2K.div2k(args)
+
+training_data_loader = DataLoader(dataset=trainset, num_workers=args.threads, batch_size=args.batch_size, shuffle=True, pin_memory=True, drop_last=True)
+
+testset = Set5_val.DatasetFromFolderVal(args.valid_root+"/DIV2K_valid_HR",
+                                       args.valid_root+"/DIV2K_valid_LR_bicubic/X4/",
+                                       args.scale)
+testing_data_loader = DataLoader(dataset=testset, num_workers=args.threads, batch_size=args.testBatchSize,
+                                 shuffle=False)                                
+
 
 print("===> Setting Optimizer")
 
