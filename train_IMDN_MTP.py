@@ -204,10 +204,9 @@ for epoch in range(args.start_epoch, args.nEpochs + 1):
     if epoch%(args.valid_freq)==0:
       valid() 
     if epoch%200==0:
-        valid() 
         if args.patch_change == 'up':
           args.patch_size = args.patch_size + 64
-        elif args.path_change == 'down':
+        elif args.patch_change == 'down':
           args.patch_size = args.patch_size - 64
         print('patch_size',args.patch_size)
         trainset = DIV2K.div2k(args)
