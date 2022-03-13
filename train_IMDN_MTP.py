@@ -99,7 +99,7 @@ if args.pretrained:
         print("===> no models found at '{}'".format(args.pretrained))
 
 print("===> Loading datasets")
-scale_patch_size = args.start_epoch // 200
+scale_patch_size = args.start_epoch // (201)
 if args.patch_change == 'up':
     args.patch_size = args.patch_size + 64*scale_patch_size
 elif args.patch_change == 'down':
