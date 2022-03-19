@@ -60,6 +60,7 @@ parser.add_argument("--patch_change", type=str, default='')
 parser.add_argument("--valid_root", type=str, default='/content')
 parser.add_argument("--iskaggle", type=str, default='no')
 parser.add_argument("--valid_freq", type=int, default=20)
+parser.add_argument("--loss", type=str, default='l1')
 
 args = parser.parse_args()
 print(args)
@@ -80,7 +81,31 @@ print("===> Building models")
 args.is_train = True
 
 model = architecture.IMDN(upscale=args.scale)
-l1_criterion = nn.L1Loss()
+
+class MultiTaskLoss(nn.Module):
+  def __init__(self, task_num, LOSS):
+      super(MultiTaskLoss, self).__init__()
+      self.task_num = task_num
+      self.LOSS = LOSS
+      log_vars = torch.ones(task_num,requires_grad=True)
+      self.log_vars = torch.nn.Parameter(log_vars)
+
+  def forward(self, input, targets):
+      loss = 0
+      for i in range(self.task_num):
+        loss_temp = self.LOSS[i](input[i],targets[i])
+        if i==0:
+          loss = 0.5 / (self.log_vars[i] ** 2) * loss_temp + torch.log(self.log_vars[i] ** 2)
+        else:
+          loss += 0.5 / (self.log_vars[i] ** 2) * loss_temp + torch.log(self.log_vars[i] ** 2)
+          
+      loss = torch.mean(loss)
+
+      return loss
+if args.loss == 'l1':
+  l1_criterion = nn.L1Loss()
+elif args.loss == 'mtloss':
+  l1_criterion = MultiTaskLoss(2,[nn.L1Loss(),nn.MSELoss()])
 
 print("===> Setting GPU")
 if cuda:
