@@ -93,7 +93,7 @@ class MultiTaskLoss(nn.Module):
   def forward(self, input, targets):
       loss = 0
       for i in range(self.task_num):
-        loss_temp = self.LOSS[i](input[i],targets[i])
+        loss_temp = self.LOSS[i](input,targets)
         if i==0:
           loss = 0.5 / (self.log_vars[i] ** 2) * loss_temp + torch.log(self.log_vars[i] ** 2)
         else:
