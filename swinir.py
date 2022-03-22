@@ -442,7 +442,7 @@ class RSTB(nn.Module):
     def __init__(self, dim=64, input_resolution=[48,48], depth=2, num_heads=2, window_size=6,
                  mlp_ratio=4., qkv_bias=True, qk_scale=None, drop=0., attn_drop=0.,embed_dim=96,
                  drop_path=0., norm_layer=nn.LayerNorm, downsample=None, use_checkpoint=False,
-                 img_size=48, patch_size=4, resi_connection='1conv'):
+                 img_size=80, patch_size=4, resi_connection='1conv'):
         super(RSTB, self).__init__()
 
         self.dim = dim
