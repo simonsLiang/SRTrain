@@ -984,12 +984,12 @@ class Config:
     MODEL.DEPTH = 2
     MODEL.IMAGE_SIZE = 192 // (2 ** MODEL.DEPTH)
     MODEL.SCALES = [4]
-    MODEL.WINDOW_SIZE = (6, 12)
+    MODEL.WINDOW_SIZE = (6, 24)
     MODEL.IMAGE_RANGE = 1.0
     MODEL.NUM_FEAT = 8
-    MODEL.DEPTHS = [2, 2, 2, 2]
+    MODEL.DEPTHS = [2, 2]
     MODEL.EMBED_DIM = 60
-    MODEL.NUM_HEADS = [2, 2, 2, 2]
+    MODEL.NUM_HEADS = [2, 2]
     MODEL.MLP_RATIO = 2
     MODEL.UPSAMPLER = 'pixelshuffledirect'
     MODEL.RESI_CONNECTION = '1conv'
