@@ -144,7 +144,7 @@ def train(epoch):
                                                                   loss_l1.item()))
 
 best_psnr = 0
-window_size = 12 
+window_size = 24 
 def valid():
     model.eval()
     _, _, h_old, w_old = lr_tensor.size()
