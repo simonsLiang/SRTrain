@@ -3,7 +3,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader
-from model import edt
+from model import archhitecture
 from data import DIV2K, Set5_val
 import utils
 import skimage.color as sc
@@ -83,7 +83,7 @@ resname = args.resname
 print("===> Building models")
 args.is_train = True
 
-model = edt.min_edt()
+model = archhitecture.IMDN()
 
 l1_criterion = nn.L1Loss()
 
