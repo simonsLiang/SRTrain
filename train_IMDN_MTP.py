@@ -144,14 +144,8 @@ def train(epoch):
                                                                   loss_l1.item()))
 
 best_psnr = 0
-window_size = 24 
 def valid():
     model.eval()
-    _, _, h_old, w_old = lr_tensor.size()
-    h_pad = (h_old // window_size + 1) * window_size - h_old
-    w_pad = (w_old // window_size + 1) * window_size - w_old
-    lr_tensor = torch.cat([lr_tensor, torch.flip(lr_tensor, [2])], 2)[:, :, :h_old + h_pad, :]
-    lr_tensor = torch.cat([lr_tensor, torch.flip(lr_tensor, [3])], 3)[:, :, :, :w_old + w_pad]
     avg_psnr, avg_ssim = 0, 0
     for batch in testing_data_loader:
         lr_tensor, hr_tensor = batch[0], batch[1]
@@ -160,7 +154,7 @@ def valid():
             hr_tensor = hr_tensor.to(device)
 
         with torch.no_grad():
-            pre = model([lr_tensor])[..., :h_old * args.scale, :w_old * args.scale]
+            pre = model([lr_tensor])
 
         sr_img = utils.tensor2np(pre.detach()[0])
         gt_img = utils.tensor2np(hr_tensor.detach()[0])
