@@ -3,7 +3,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader
-from model import archhitecture
+from model import architecture
 from data import DIV2K, Set5_val
 import utils
 import skimage.color as sc
